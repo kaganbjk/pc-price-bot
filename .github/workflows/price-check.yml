@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: "*/15 * * * *"
 
+permissions:
+  contents: write
+
 jobs:
   price-check:
     runs-on: ubuntu-latest
@@ -26,3 +29,13 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python price_check.py
+
+      - name: Bildirim durumunu kaydet
+        run: |
+          if [ -f state.json ]; then
+            git config user.name "github-actions"
+            git config user.email "github-actions@github.com"
+            git add state.json
+            git diff --cached --quiet || git commit -m "Update price alert state"
+            git push
+          fi
