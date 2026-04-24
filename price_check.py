@@ -1,5 +1,7 @@
 import os
 import re
+import json
+import hashlib
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import quote_plus
@@ -7,26 +9,28 @@ from urllib.parse import quote_plus
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
+STATE_FILE = "state.json"
+
 PRODUCT = {
     "name": "Colorful RTX 5070 Ti",
     "query": "Colorful RTX 5070 Ti",
     "target_price": 50000,
     "include": ["colorful", "5070", "ti"],
     "exclude": [
-        "5070 sistem",
-        "5070 ti sistem",
         "hazır sistem",
         "hazir sistem",
         "oyuncu bilgisayarı",
         "oyuncu bilgisayari",
         "gaming pc",
+        "sistem",
         "laptop",
         "notebook",
         "ikinci el",
         "2.el",
         "2 el",
         "5080",
-        "5070 super"
+        "5070 super",
+        "rtx 5070 12gb"
     ]
 }
 
@@ -102,25 +106,44 @@ def normalize(text):
     return text.strip()
 
 
+def load_state():
+    if not os.path.exists(STATE_FILE):
+        return {}
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_state(state):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
 def parse_price(price_text):
-    price_text = str(price_text)
-    price_text = price_text.replace("₺", "")
-    price_text = price_text.replace("TL", "")
-    price_text = price_text.replace("tl", "")
-    price_text = price_text.strip()
+    raw = str(price_text)
+    raw = raw.replace("₺", "")
+    raw = raw.replace("TL", "")
+    raw = raw.replace("tl", "")
+    raw = raw.strip()
 
-    # 49.999,00 -> 49999.00
-    price_text = price_text.replace(".", "").replace(",", ".")
+    raw = raw.replace(".", "").replace(",", ".")
 
-    nums = re.findall(r"\d+(?:\.\d+)?", price_text)
+    nums = re.findall(r"\d+(?:\.\d+)?", raw)
 
     if not nums:
         return None
 
     try:
-        return float(nums[0])
+        price = float(nums[0])
     except Exception:
         return None
+
+    if price < 1000 or price > 300000:
+        return None
+
+    return price
 
 
 def extract_prices(text):
@@ -136,8 +159,11 @@ def extract_prices(text):
     for pattern in patterns:
         for match in re.findall(pattern, text, flags=re.IGNORECASE):
             price = parse_price(match)
-            if price and 1000 <= price <= 300000:
-                found.append((price, match))
+            if price:
+                found.append({
+                    "price": price,
+                    "price_text": match.strip()
+                })
 
     return found
 
@@ -170,24 +196,27 @@ def send_telegram(message):
         print("Telegram mesaj hatası:", response.text)
 
 
-def check_store(store):
+def fetch_store(store):
     query = quote_plus(PRODUCT["query"])
     url = store["search_url"].format(query=query)
 
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0 Safari/537.36"
+        ),
         "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
     }
 
     try:
-        r = requests.get(url, headers=headers, timeout=25)
-        r.raise_for_status()
+        response = requests.get(url, headers=headers, timeout=25)
+        response.raise_for_status()
     except Exception as e:
         print(f"{store['name']} hata: {e}")
         return None
 
-    soup = BeautifulSoup(r.text, "html.parser")
+    soup = BeautifulSoup(response.text, "html.parser")
 
     for bad in soup(["script", "style", "noscript"]):
         bad.decompose()
@@ -195,7 +224,7 @@ def check_store(store):
     page_text = soup.get_text(" ", strip=True)
 
     if not product_matches(page_text):
-        print(f"{store['name']}: ürün kelimeleri eşleşmedi")
+        print(f"{store['name']}: ürün eşleşmedi")
         return None
 
     prices = extract_prices(page_text)
@@ -204,65 +233,77 @@ def check_store(store):
         print(f"{store['name']}: fiyat bulunamadı")
         return None
 
-    cheapest = min(prices, key=lambda x: x[0])
+    cheapest = min(prices, key=lambda item: item["price"])
 
     return {
         "store": store["name"],
         "url": url,
-        "price": cheapest[0],
-        "price_text": cheapest[1]
+        "price": cheapest["price"],
+        "price_text": cheapest["price_text"]
     }
 
 
+def build_alert_key(result):
+    raw = f"{PRODUCT['name']}|{result['store']}|{result['price']}|{result['url']}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def main():
-    matches = []
-    checked_store_names = []
+    state = load_state()
+    results = []
 
     for store in STORES:
-        checked_store_names.append(store["name"])
-
-        result = check_store(store)
-
+        result = fetch_store(store)
         if result:
-            matches.append(result)
-            print(result)
+            results.append(result)
 
-    if not matches:
-        send_telegram(
-            "⚠️ Colorful RTX 5070 Ti kontrol edildi ama uygun fiyat/sonuç bulunamadı.\n\n"
-            "Kontrol edilen mağazalar:\n"
-            + "\n".join(f"- {name}" for name in checked_store_names)
-            + "\n\nBu ilk ücretsiz bot sürümü. Bazı mağazalar bot engeli veya farklı sayfa yapısı nedeniyle ayrı düzeltme isteyebilir."
-        )
+    if not results:
+        print("Ürün bulunamadı. Telegram mesajı gönderilmiyor.")
         return
 
-    cheapest = min(matches, key=lambda x: x["price"])
+    cheapest = min(results, key=lambda item: item["price"])
 
-    all_results = "\n".join(
+    print("En düşük bulunan sonuç:")
+    print(cheapest)
+
+    if cheapest["price"] > PRODUCT["target_price"]:
+        print("Fiyat hedefin üstünde. Telegram mesajı gönderilmiyor.")
+        return
+
+    alert_key = build_alert_key(cheapest)
+    last_alert_key = state.get(PRODUCT["name"], {}).get("last_alert_key")
+
+    if alert_key == last_alert_key:
+        print("Bu fiyat daha önce bildirildi. Tekrar mesaj gönderilmiyor.")
+        return
+
+    sorted_results = sorted(results, key=lambda item: item["price"])
+
+    other_results = "\n".join(
         f"- {item['store']}: {item['price_text']}"
-        for item in sorted(matches, key=lambda x: x["price"])
+        for item in sorted_results[:5]
     )
 
-    if cheapest["price"] <= PRODUCT["target_price"]:
-        send_telegram(
-            "🔥 Hedef fiyat altı veya eşit ürün bulundu!\n\n"
-            f"Ürün: {PRODUCT['name']}\n"
-            f"Hedef fiyat: {PRODUCT['target_price']:,.0f} TL\n"
-            f"Bulunan fiyat: {cheapest['price_text']}\n"
-            f"Mağaza: {cheapest['store']}\n\n"
-            f"Link:\n{cheapest['url']}\n\n"
-            f"Bulunan diğer sonuçlar:\n{all_results}"
-        )
-    else:
-        send_telegram(
-            "📊 Fiyat kontrolü tamamlandı.\n\n"
-            f"Ürün: {PRODUCT['name']}\n"
-            f"En düşük görünen fiyat: {cheapest['price_text']}\n"
-            f"Mağaza: {cheapest['store']}\n"
-            f"Hedef: {PRODUCT['target_price']:,.0f} TL\n\n"
-            f"Link:\n{cheapest['url']}\n\n"
-            f"Bulunan sonuçlar:\n{all_results}"
-        )
+    message = (
+        "🔥 Hedef fiyat yakalandı!\n\n"
+        f"Ürün: {PRODUCT['name']}\n"
+        f"Hedef fiyat: {PRODUCT['target_price']:,.0f} TL\n"
+        f"Bulunan fiyat: {cheapest['price_text']}\n"
+        f"Mağaza: {cheapest['store']}\n\n"
+        f"Link:\n{cheapest['url']}\n\n"
+        f"Bulunan diğer sonuçlar:\n{other_results}"
+    )
+
+    send_telegram(message)
+
+    state[PRODUCT["name"]] = {
+        "last_alert_key": alert_key,
+        "last_price": cheapest["price"],
+        "last_store": cheapest["store"],
+        "last_url": cheapest["url"]
+    }
+
+    save_state(state)
 
 
 if __name__ == "__main__":
