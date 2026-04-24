@@ -11,11 +11,30 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 STATE_FILE = "state.json"
 
+OUT_OF_STOCK_WORDS = [
+    "stokta yok",
+    "stok yok",
+    "tükendi",
+    "tukendi",
+    "satışta değil",
+    "satista degil",
+    "geçici olarak temin edilemiyor",
+    "gecici olarak temin edilemiyor",
+    "gelince haber ver",
+    "stoklara gelince haber ver",
+    "şu anda mevcut değil",
+    "su anda mevcut degil",
+    "currently unavailable",
+    "out of stock",
+    "sold out"
+]
+
 PRODUCTS = [
     {
         "name": "Colorful RTX 5070 Ti",
         "query": "Colorful RTX 5070 Ti",
         "target_price": 50000,
+        "min_price": 35000,
         "include": ["colorful", "5070", "ti"],
         "exclude": [
             "hazır sistem", "hazir sistem", "oyuncu bilgisayarı", "oyuncu bilgisayari",
@@ -27,6 +46,7 @@ PRODUCTS = [
         "name": "Ryzen 7 9800X3D",
         "query": "Ryzen 7 9800X3D",
         "target_price": 20000,
+        "min_price": 10000,
         "include": ["9800x3d"],
         "exclude": [
             "hazır sistem", "hazir sistem", "oyuncu bilgisayarı", "oyuncu bilgisayari",
@@ -38,6 +58,7 @@ PRODUCTS = [
         "name": "Lian Li HydroShift II LCD-S 360CL",
         "query": "Lian Li HydroShift II LCD-S 360CL White",
         "target_price": 8500,
+        "min_price": 4000,
         "include": ["lian", "li", "hydroshift", "lcd", "360"],
         "exclude": [
             "hazır sistem", "hazir sistem", "ikinci el", "2.el", "2 el",
@@ -49,6 +70,7 @@ PRODUCTS = [
         "name": "Kioxia Exceria Plus G4 2TB PCIe 5.0 M.2 SSD",
         "query": "Kioxia Exceria Plus G4 LVD10Z002TG8 PCI Express 5.0 2TB M.2 SSD",
         "target_price": 10500,
+        "min_price": 5000,
         "include": ["kioxia", "exceria", "plus", "g4", "2tb"],
         "exclude": [
             "hazır sistem", "hazir sistem", "ikinci el", "2.el", "2 el",
@@ -59,6 +81,7 @@ PRODUCTS = [
         "name": "MSI MPG B850 Edge TI Wi-Fi AM5 DDR5 ATX",
         "query": "MSI MPG B850 Edge TI WiFi AM5 DDR5 ATX",
         "target_price": 12500,
+        "min_price": 5000,
         "include": ["msi", "b850", "edge", "wifi"],
         "exclude": [
             "hazır sistem", "hazir sistem", "ikinci el", "2.el", "2 el",
@@ -69,6 +92,7 @@ PRODUCTS = [
         "name": "Corsair RM850e Gen5.1 850W White PSU",
         "query": "Corsair RM850e Gen5.1 850W Beyaz Power Supply",
         "target_price": 6500,
+        "min_price": 3000,
         "include": ["corsair", "rm850e", "850"],
         "exclude": [
             "hazır sistem", "hazir sistem", "ikinci el", "2.el", "2 el",
@@ -80,6 +104,7 @@ PRODUCTS = [
         "name": "ASUS ROG Strix B850-A Gaming Wi-Fi AM5 DDR5 ATX",
         "query": "ASUS ROG Strix B850-A Gaming WiFi AM5 DDR5 ATX",
         "target_price": 12500,
+        "min_price": 5000,
         "include": ["asus", "rog", "strix", "b850", "wifi"],
         "exclude": [
             "hazır sistem", "hazir sistem", "ikinci el", "2.el", "2 el",
@@ -91,6 +116,7 @@ PRODUCTS = [
         "name": "MSI MAG A850GL White Gen5 850W PSU",
         "query": "MSI MAG A850GL White Gen5 850W Power Supply",
         "target_price": 6500,
+        "min_price": 3000,
         "include": ["msi", "a850gl", "850"],
         "exclude": [
             "hazır sistem", "hazir sistem", "ikinci el", "2.el", "2 el",
@@ -102,6 +128,7 @@ PRODUCTS = [
         "name": "Colorful RTX 5080 iGame Ultra W OC",
         "query": "Colorful RTX 5080 iGame Ultra W OC",
         "target_price": 65000,
+        "min_price": 55000,
         "include": ["colorful", "5080", "igame", "ultra"],
         "exclude": [
             "hazır sistem", "hazir sistem", "oyuncu bilgisayarı", "oyuncu bilgisayari",
@@ -113,6 +140,7 @@ PRODUCTS = [
         "name": "Gigabyte RTX 5070 Ti Aero OC 16G",
         "query": "Gigabyte RTX 5070 Ti Aero OC 16G",
         "target_price": 50000,
+        "min_price": 35000,
         "include": ["gigabyte", "5070", "ti", "aero"],
         "exclude": [
             "hazır sistem", "hazir sistem", "oyuncu bilgisayarı", "oyuncu bilgisayari",
@@ -166,14 +194,13 @@ def save_state(state):
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
-def parse_price(price_text):
+def parse_price(product, price_text):
     raw = str(price_text)
     raw = raw.replace("₺", "")
     raw = raw.replace("TL", "")
     raw = raw.replace("tl", "")
     raw = raw.replace("TRY", "")
     raw = raw.strip()
-
     raw = raw.replace(".", "").replace(",", ".")
 
     nums = re.findall(r"\d+(?:\.\d+)?", raw)
@@ -186,13 +213,18 @@ def parse_price(price_text):
     except Exception:
         return None
 
-    if price < 1000 or price > 500000:
+    min_price = product.get("min_price", 1000)
+
+    if price < min_price:
+        return None
+
+    if price > 500000:
         return None
 
     return price
 
 
-def extract_prices(text):
+def extract_prices(product, text):
     patterns = [
         r"\d{1,3}(?:\.\d{3})+(?:,\d{2})?\s*TL",
         r"\d{4,6}(?:,\d{2})?\s*TL",
@@ -206,7 +238,7 @@ def extract_prices(text):
 
     for pattern in patterns:
         for match in re.findall(pattern, text, flags=re.IGNORECASE):
-            price = parse_price(match)
+            price = parse_price(product, match)
             if price:
                 found.append({
                     "price": price,
@@ -216,25 +248,27 @@ def extract_prices(text):
     return found
 
 
-def product_matches(product, text):
+def has_excluded_word(product, text):
     t = normalize(text)
-
-    for word in product["include"]:
-        if normalize(word) not in t:
-            return False
 
     for word in product["exclude"]:
         if normalize(word) in t:
-            return False
+            return True
 
-    return True
+    return False
+
+
+def has_out_of_stock_word(text):
+    t = normalize(text)
+
+    for word in OUT_OF_STOCK_WORDS:
+        if normalize(word) in t:
+            return True
+
+    return False
 
 
 def product_soft_matches(product, text):
-    """
-    Sayfanın tamamı yerine ürün kartı/yakın metin kontrolü için daha mantıklı eşleşme.
-    Include kelimelerinin çoğu varsa ürünü aday sayar.
-    """
     t = normalize(text)
 
     include_hits = 0
@@ -249,23 +283,8 @@ def product_soft_matches(product, text):
     return include_hits >= max(2, len(product["include"]) - 1)
 
 
-def has_excluded_word(product, text):
-    t = normalize(text)
-
-    for word in product["exclude"]:
-        if normalize(word) in t:
-            return True
-
-    return False
-
-
 def find_candidate_blocks(product, soup):
-    """
-    Ürün adının geçtiği ürün kartı/bağlantı çevresini bulmaya çalışır.
-    Menüde geçen kelimelerden etkilenmemek için tüm sayfayı tek parça elemez.
-    """
     blocks = []
-
     possible_tags = soup.find_all(["a", "div", "li", "article", "section", "span", "h2", "h3"])
 
     for tag in possible_tags:
@@ -277,24 +296,43 @@ def find_candidate_blocks(product, soup):
         if len(text) < 10:
             continue
 
-        if product_soft_matches(product, text):
-            parent_texts = []
+        if not product_soft_matches(product, text):
+            continue
 
-            current = tag
-            for _ in range(4):
-                if current is None:
-                    break
+        current = tag
 
-                current_text = current.get_text(" ", strip=True)
+        for _ in range(4):
+            if current is None:
+                break
 
-                if current_text and len(current_text) < 5000:
-                    parent_texts.append(current_text)
+            block_text = current.get_text(" ", strip=True)
 
+            if not block_text:
                 current = current.parent
+                continue
 
-            for block_text in parent_texts:
-                if product_soft_matches(product, block_text) and not has_excluded_word(product, block_text):
-                    blocks.append(block_text)
+            if len(block_text) > 1500:
+                current = current.parent
+                continue
+
+            if not product_soft_matches(product, block_text):
+                current = current.parent
+                continue
+
+            if has_excluded_word(product, block_text):
+                current = current.parent
+                continue
+
+            if has_out_of_stock_word(block_text):
+                current = current.parent
+                continue
+
+            prices = extract_prices(product, block_text)
+
+            if prices:
+                blocks.append(block_text)
+
+            current = current.parent
 
     unique_blocks = []
     seen = set()
@@ -316,15 +354,9 @@ def get_best_result_from_blocks(product, store, url, soup):
     candidates = []
 
     for block in blocks:
-        prices = extract_prices(block)
+        prices = extract_prices(product, block)
 
         if not prices:
-            continue
-
-        if not product_soft_matches(product, block):
-            continue
-
-        if has_excluded_word(product, block):
             continue
 
         cheapest = min(prices, key=lambda item: item["price"])
@@ -342,34 +374,6 @@ def get_best_result_from_blocks(product, store, url, soup):
         return None
 
     return min(candidates, key=lambda item: item["price"])
-
-
-def get_best_result_from_page(product, store, url, soup):
-    """
-    Blok yöntemi sonuç vermezse sayfanın tamamına bakar.
-    Ancak exclude kelimelerini tüm sayfaya uygulamaz;
-    çünkü menüde 'hazır sistem' geçmesi ürünü yanlış eleyebilir.
-    """
-    page_text = soup.get_text(" ", strip=True)
-
-    if not product_soft_matches(product, page_text):
-        return None
-
-    prices = extract_prices(page_text)
-
-    if not prices:
-        return None
-
-    cheapest = min(prices, key=lambda item: item["price"])
-
-    return {
-        "product": product["name"],
-        "store": store["name"],
-        "url": url,
-        "price": cheapest["price"],
-        "price_text": cheapest["price_text"],
-        "source": "page"
-    }
 
 
 def send_telegram(message):
@@ -418,13 +422,7 @@ def fetch_store(product, store):
     result = get_best_result_from_blocks(product, store, url, soup)
 
     if result:
-        print(f"{product['name']} | {store['name']}: bloktan fiyat yakalandı -> {result['price_text']}")
-        return result
-
-    result = get_best_result_from_page(product, store, url, soup)
-
-    if result:
-        print(f"{product['name']} | {store['name']}: sayfadan fiyat yakalandı -> {result['price_text']}")
+        print(f"{product['name']} | {store['name']}: fiyat yakalandı -> {result['price_text']}")
         return result
 
     print(f"{product['name']} | {store['name']}: ürün/fiyat yakalanamadı")
@@ -439,9 +437,10 @@ def build_alert_key(product, result):
 def check_product(product, state):
     results = []
 
-    print(f"\n==============================")
+    print("\n==============================")
     print(f"Kontrol ediliyor: {product['name']}")
     print(f"Hedef fiyat: {product['target_price']} TL")
+    print(f"Minimum gerçekçi fiyat: {product.get('min_price')} TL")
 
     for store in STORES:
         result = fetch_store(product, store)
