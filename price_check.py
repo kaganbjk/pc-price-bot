@@ -19,7 +19,7 @@ PRODUCTS = [
         "include": ["colorful", "5070", "ti"],
         "exclude": [
             "hazır sistem", "hazir sistem", "oyuncu bilgisayarı", "oyuncu bilgisayari",
-            "gaming pc", "sistem", "laptop", "notebook", "ikinci el", "2.el", "2 el",
+            "gaming pc", "laptop", "notebook", "ikinci el", "2.el", "2 el",
             "5080", "5070 super", "rtx 5070 12gb"
         ]
     },
@@ -30,7 +30,7 @@ PRODUCTS = [
         "include": ["9800x3d"],
         "exclude": [
             "hazır sistem", "hazir sistem", "oyuncu bilgisayarı", "oyuncu bilgisayari",
-            "gaming pc", "sistem", "laptop", "notebook", "ikinci el", "2.el", "2 el",
+            "gaming pc", "laptop", "notebook", "ikinci el", "2.el", "2 el",
             "tray", "fan", "soğutucu", "sogutucu", "7600x3d", "7800x3d", "7950x3d"
         ]
     },
@@ -105,7 +105,7 @@ PRODUCTS = [
         "include": ["colorful", "5080", "igame", "ultra"],
         "exclude": [
             "hazır sistem", "hazir sistem", "oyuncu bilgisayarı", "oyuncu bilgisayari",
-            "gaming pc", "sistem", "laptop", "notebook", "ikinci el", "2.el", "2 el",
+            "gaming pc", "laptop", "notebook", "ikinci el", "2.el", "2 el",
             "5070", "5070 ti", "5090"
         ]
     },
@@ -116,7 +116,7 @@ PRODUCTS = [
         "include": ["gigabyte", "5070", "ti", "aero"],
         "exclude": [
             "hazır sistem", "hazir sistem", "oyuncu bilgisayarı", "oyuncu bilgisayari",
-            "gaming pc", "sistem", "laptop", "notebook", "ikinci el", "2.el", "2 el",
+            "gaming pc", "laptop", "notebook", "ikinci el", "2.el", "2 el",
             "5080", "5070 super", "rtx 5070 12gb", "windforce", "gaming oc", "eagle"
         ]
     }
@@ -145,6 +145,7 @@ def normalize(text):
     text = str(text).lower()
     text = text.replace("ı", "i").replace("İ", "i")
     text = text.replace("\n", " ")
+    text = text.replace("\t", " ")
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -170,6 +171,7 @@ def parse_price(price_text):
     raw = raw.replace("₺", "")
     raw = raw.replace("TL", "")
     raw = raw.replace("tl", "")
+    raw = raw.replace("TRY", "")
     raw = raw.strip()
 
     raw = raw.replace(".", "").replace(",", ".")
@@ -195,7 +197,9 @@ def extract_prices(text):
         r"\d{1,3}(?:\.\d{3})+(?:,\d{2})?\s*TL",
         r"\d{4,6}(?:,\d{2})?\s*TL",
         r"₺\s*\d{1,3}(?:\.\d{3})+(?:,\d{2})?",
-        r"₺\s*\d{4,6}(?:,\d{2})?"
+        r"₺\s*\d{4,6}(?:,\d{2})?",
+        r"\d{1,3}(?:\.\d{3})+(?:,\d{2})?\s*₺",
+        r"\d{4,6}(?:,\d{2})?\s*₺"
     ]
 
     found = []
@@ -226,6 +230,148 @@ def product_matches(product, text):
     return True
 
 
+def product_soft_matches(product, text):
+    """
+    Sayfanın tamamı yerine ürün kartı/yakın metin kontrolü için daha mantıklı eşleşme.
+    Include kelimelerinin çoğu varsa ürünü aday sayar.
+    """
+    t = normalize(text)
+
+    include_hits = 0
+
+    for word in product["include"]:
+        if normalize(word) in t:
+            include_hits += 1
+
+    if len(product["include"]) <= 2:
+        return include_hits == len(product["include"])
+
+    return include_hits >= max(2, len(product["include"]) - 1)
+
+
+def has_excluded_word(product, text):
+    t = normalize(text)
+
+    for word in product["exclude"]:
+        if normalize(word) in t:
+            return True
+
+    return False
+
+
+def find_candidate_blocks(product, soup):
+    """
+    Ürün adının geçtiği ürün kartı/bağlantı çevresini bulmaya çalışır.
+    Menüde geçen kelimelerden etkilenmemek için tüm sayfayı tek parça elemez.
+    """
+    blocks = []
+
+    possible_tags = soup.find_all(["a", "div", "li", "article", "section", "span", "h2", "h3"])
+
+    for tag in possible_tags:
+        text = tag.get_text(" ", strip=True)
+
+        if not text:
+            continue
+
+        if len(text) < 10:
+            continue
+
+        if product_soft_matches(product, text):
+            parent_texts = []
+
+            current = tag
+            for _ in range(4):
+                if current is None:
+                    break
+
+                current_text = current.get_text(" ", strip=True)
+
+                if current_text and len(current_text) < 5000:
+                    parent_texts.append(current_text)
+
+                current = current.parent
+
+            for block_text in parent_texts:
+                if product_soft_matches(product, block_text) and not has_excluded_word(product, block_text):
+                    blocks.append(block_text)
+
+    unique_blocks = []
+    seen = set()
+
+    for block in blocks:
+        clean = normalize(block)
+
+        if clean in seen:
+            continue
+
+        seen.add(clean)
+        unique_blocks.append(block)
+
+    return unique_blocks[:20]
+
+
+def get_best_result_from_blocks(product, store, url, soup):
+    blocks = find_candidate_blocks(product, soup)
+    candidates = []
+
+    for block in blocks:
+        prices = extract_prices(block)
+
+        if not prices:
+            continue
+
+        if not product_soft_matches(product, block):
+            continue
+
+        if has_excluded_word(product, block):
+            continue
+
+        cheapest = min(prices, key=lambda item: item["price"])
+
+        candidates.append({
+            "product": product["name"],
+            "store": store["name"],
+            "url": url,
+            "price": cheapest["price"],
+            "price_text": cheapest["price_text"],
+            "source": "block"
+        })
+
+    if not candidates:
+        return None
+
+    return min(candidates, key=lambda item: item["price"])
+
+
+def get_best_result_from_page(product, store, url, soup):
+    """
+    Blok yöntemi sonuç vermezse sayfanın tamamına bakar.
+    Ancak exclude kelimelerini tüm sayfaya uygulamaz;
+    çünkü menüde 'hazır sistem' geçmesi ürünü yanlış eleyebilir.
+    """
+    page_text = soup.get_text(" ", strip=True)
+
+    if not product_soft_matches(product, page_text):
+        return None
+
+    prices = extract_prices(page_text)
+
+    if not prices:
+        return None
+
+    cheapest = min(prices, key=lambda item: item["price"])
+
+    return {
+        "product": product["name"],
+        "store": store["name"],
+        "url": url,
+        "price": cheapest["price"],
+        "price_text": cheapest["price_text"],
+        "source": "page"
+    }
+
+
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
@@ -251,11 +397,14 @@ def fetch_store(product, store):
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0 Safari/537.36"
         ),
-        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7"
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache"
     }
 
     try:
-        response = requests.get(url, headers=headers, timeout=25)
+        response = requests.get(url, headers=headers, timeout=30, allow_redirects=True)
         response.raise_for_status()
     except Exception as e:
         print(f"{product['name']} | {store['name']} hata: {e}")
@@ -263,30 +412,23 @@ def fetch_store(product, store):
 
     soup = BeautifulSoup(response.text, "html.parser")
 
-    for bad in soup(["script", "style", "noscript"]):
+    for bad in soup(["script", "style", "noscript", "svg"]):
         bad.decompose()
 
-    page_text = soup.get_text(" ", strip=True)
+    result = get_best_result_from_blocks(product, store, url, soup)
 
-    if not product_matches(product, page_text):
-        print(f"{product['name']} | {store['name']}: ürün eşleşmedi")
-        return None
+    if result:
+        print(f"{product['name']} | {store['name']}: bloktan fiyat yakalandı -> {result['price_text']}")
+        return result
 
-    prices = extract_prices(page_text)
+    result = get_best_result_from_page(product, store, url, soup)
 
-    if not prices:
-        print(f"{product['name']} | {store['name']}: fiyat bulunamadı")
-        return None
+    if result:
+        print(f"{product['name']} | {store['name']}: sayfadan fiyat yakalandı -> {result['price_text']}")
+        return result
 
-    cheapest = min(prices, key=lambda item: item["price"])
-
-    return {
-        "product": product["name"],
-        "store": store["name"],
-        "url": url,
-        "price": cheapest["price"],
-        "price_text": cheapest["price_text"]
-    }
+    print(f"{product['name']} | {store['name']}: ürün/fiyat yakalanamadı")
+    return None
 
 
 def build_alert_key(product, result):
@@ -297,10 +439,13 @@ def build_alert_key(product, result):
 def check_product(product, state):
     results = []
 
-    print(f"\nKontrol ediliyor: {product['name']}")
+    print(f"\n==============================")
+    print(f"Kontrol ediliyor: {product['name']}")
+    print(f"Hedef fiyat: {product['target_price']} TL")
 
     for store in STORES:
         result = fetch_store(product, store)
+
         if result:
             results.append(result)
 
@@ -327,7 +472,7 @@ def check_product(product, state):
     sorted_results = sorted(results, key=lambda item: item["price"])
 
     other_results = "\n".join(
-        f"- {item['store']}: {item['price_text']}"
+        f"- {item['store']}: {item['price_text']} ({item['source']})"
         for item in sorted_results[:5]
     )
 
